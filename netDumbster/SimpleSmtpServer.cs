@@ -14,6 +14,7 @@ namespace netDumbster.smtp
     using System.Threading;
 
     using netDumbster.smtp.Logging;
+    using System.Security.Cryptography.X509Certificates;
 
     /// <summary>
     /// Simple Smtp Server
@@ -67,6 +68,16 @@ namespace netDumbster.smtp
 
         #region Properties
 
+        public X509Certificate Certificate { get; set; }
+        private Func<string, bool> _emailValidator;
+        /// <summary>
+        /// Sets the email validation function used to ensure the Receipt email address is valid.
+        /// </summary>
+        /// <value>Validator Function takes email address and returns bool.</value>
+        public void SetEmailValidator(Func<string, bool> validator)
+        {
+            _emailValidator = validator;
+        }
         /// <summary>
         /// Gets or sets the port.
         /// </summary>
@@ -123,7 +134,14 @@ namespace netDumbster.smtp
             server.ServerReady.WaitOne();
             return server;
         }
-
+        public static SimpleSmtpServer Start(int port, X509Certificate cert)
+        {
+            var server = new SimpleSmtpServer(port);
+            server.Certificate = cert;
+            new Thread(new ThreadStart(server.StartListening)).Start();
+            server.ServerReady.WaitOne();
+            return server;
+        }
         /// <summary>
         /// Clears the received email.
         /// </summary>
@@ -222,9 +240,9 @@ namespace netDumbster.smtp
                 TcpListener listener = (TcpListener)result.AsyncState;
                 listener.BeginAcceptSocket(new AsyncCallback(_SocketHandler), listener);
 
-                log.Debug("Calling EndAcceptSocket.");
+                log.Debug("Calling EndAcceptTcpClient.");
 
-                using (Socket socket = listener.EndAcceptSocket(result))
+                using (TcpClient client = listener.EndAcceptTcpClient(result))
                 {
                     log.Debug("Socket accepted and ready to be processed.");
                     SmtpProcessor processor = new SmtpProcessor(string.Empty, smtpMessageStore);
@@ -232,7 +250,9 @@ namespace netDumbster.smtp
                         {
                             if (OnReceived != null) OnReceived(this, args);
                         };
-                    processor.ProcessConnection(socket);
+                    processor.SetEmailValidator(_emailValidator);
+                    processor.Certificate = Certificate;
+                    processor.ProcessConnection(client);
                 }
             }
             catch (ObjectDisposedException ex)
@@ -241,7 +261,7 @@ namespace netDumbster.smtp
             }
             catch (SocketException ex)
             {
-                log.Warn("Socket Exception", ex);
+                log.Warn("TcpClient Exception", ex);
             }
         }
 

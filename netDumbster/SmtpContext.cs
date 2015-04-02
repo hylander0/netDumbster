@@ -13,6 +13,8 @@ namespace netDumbster.smtp
     using System.Text;
 
     using netDumbster.smtp.Logging;
+    using System.Security.Cryptography.X509Certificates;
+    using System.IO;
 
     /// <summary>
     /// Maintains the current state for a SMTP client connection.
@@ -24,7 +26,7 @@ namespace netDumbster.smtp
     public class SmtpContext
     {
         #region Fields
-
+        public X509Certificate Certificate { get; set; }
         private const string EOL = "\r\n";
 
         /// <summary>The client domain, as specified by the helo command.</summary>
@@ -48,7 +50,7 @@ namespace netDumbster.smtp
         private SmtpMessage message;
 
         /// <summary>The socket to the client.</summary>
-        private Socket socket;
+        private Stream stream;
         ILog _Log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         #endregion Fields
@@ -58,10 +60,19 @@ namespace netDumbster.smtp
         /// <summary>
         /// Initialize this context for a given socket connection.
         /// </summary>
-        public SmtpContext(Socket socket)
+        public SmtpContext(Stream stream)
+            : this(stream, null)
         {
+          
+        }
+        /// <summary>
+        /// Initialize this context for a given socket connection and cert for TLS
+        /// </summary>
+        public SmtpContext(Stream stream, X509Certificate cert)
+        {
+            Certificate = cert;
             this.lastCommand = -1;
-            this.socket = socket;
+            this.stream = stream;
             message = new SmtpMessage();
 
             // Set the encoding to ASCII.
@@ -123,29 +134,23 @@ namespace netDumbster.smtp
         /// <summary>
         /// The Socket that is connected to the client.
         /// </summary>
-        public Socket Socket
+        public Stream Stream
         {
             get
             {
-                return socket;
+                return stream;
             }
         }
 
         #endregion Properties
 
         #region Methods
-
-        /// <summary>
-        /// Closes the socket connection to the client and performs any cleanup.
-        /// </summary>
-        public void Close()
+        public IEnumerable<string> ReceiveLines()
         {
-            _Log.Debug("Closing SmtpContext.");
-            inputBuffer.Length = 0;
-            socket.Close();
-            _Log.Debug("SmtpContext Closed.");
+            string line;
+            while ((line = reader.ReadLine()) != null)
+                yield return line;
         }
-
         /// <summary>
         /// Reads an entire line from the socket.  This method
         /// will block until an entire line has been read.
@@ -228,7 +233,12 @@ namespace netDumbster.smtp
             }
             return null;
         }
-
+        private SmtpContext UpgradeContextToSSL()
+        {
+            if (Certificate == null)
+                throw new InvalidOperationException("Unable to upgrade to SSL connection since the certificate is not provided.");
+            return this;
+        }
         #endregion Methods
     }
 }

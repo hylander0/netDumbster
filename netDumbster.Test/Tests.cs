@@ -9,6 +9,7 @@
     using netDumbster.smtp.Logging;
 
     using NUnit.Framework;
+    using System.Security.Cryptography.X509Certificates;
 
     [TestFixture]
     public class Tests
@@ -48,6 +49,38 @@
             Assert.AreEqual(100, server.ReceivedEmailCount);
         }
 
+        [Test]
+        public void Send_Email_With_Validation()
+        {
+            server.SetEmailValidator((address) =>
+            {
+                if (address.ToLower() == "valid@example.com")
+                    return true;
+                else
+                    return false;
+            });
+            SendMail(false, false, null, server.Port, "person@example.com", "valid@example.com", false);
+            Assert.AreEqual(1, server.ReceivedEmailCount);
+
+            try
+            {
+                SendMail(false, false, null, server.Port, "person@example.com", "invalid@example.com", false);
+            }
+            catch(SmtpException ex)
+            {
+                Assert.True(ex.Message.ToLower() == "error in processing. the server response was: address is invalid.");
+            }
+            
+
+            server.SetEmailValidator(null);
+        }
+
+
+        [Test]
+        public void Send_Email_Over_TLS()
+        {
+            SendMail(false, false, null, server.Port, "person@example.com", "valid@example.com", true);
+        }
         [Test]
         public void Send_100_Mail_With_SmtpAuth()
         {
@@ -185,7 +218,10 @@
         [SetUp]
         public void SetUp()
         {
-            server = SimpleSmtpServer.Start(_Rnd.Next(50000, 60000));
+            var portNum = _Rnd.Next(50000, 60000);
+            portNum = 54545;
+            ServicePointManager.ServerCertificateValidationCallback = (sender, x509Certificate, chain, errors) => true;
+            server = SimpleSmtpServer.Start(portNum, new X509Certificate("localhost.pfx", "asdf"));
         }
 
         private void SendMail()
@@ -205,19 +241,25 @@
 
         private void SendMail(bool smtpAuth, bool isBodyHtml, byte[] attachment, int serverPort)
         {
+            SendMail(smtpAuth, isBodyHtml, attachment, serverPort, "carlos@mendible.com", "karina@mendible.com", false);
+        }
+
+        private void SendMail(bool smtpAuth, bool isBodyHtml, byte[] attachment, int serverPort, string fromAddress, string toAddress, bool EnableSsl)
+        {
             using (SmtpClient client = new SmtpClient("localhost", serverPort))
             {
-                var mailMessage = new MailMessage("carlos@mendible.com", "karina@mendible.com", "test", "this is the body");
+                var mailMessage = new MailMessage(fromAddress, toAddress, "test", "this is the body");
                 mailMessage.IsBodyHtml = isBodyHtml;
 
                 if (isBodyHtml)
                     mailMessage.Body = "this is the html body";
 
+                client.EnableSsl = EnableSsl;
                 if (smtpAuth)
                 {
                     NetworkCredential credentials = new NetworkCredential("user", "pwd");
                     client.Credentials = credentials;
-                    client.EnableSsl = false;
+
                 }
                 if (attachment != null)
                 {

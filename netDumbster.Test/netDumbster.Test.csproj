@@ -72,6 +72,9 @@
     <Compile Include="Tests.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="localhost.pfx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>

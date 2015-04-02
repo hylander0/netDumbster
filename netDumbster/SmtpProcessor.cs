@@ -17,6 +17,7 @@ namespace netDumbster.smtp
     using System.Text.RegularExpressions;
 
     using netDumbster.smtp.Logging;
+    using System.Security.Cryptography.X509Certificates;
 
     /// <summary>
     /// SMTPProcessor handles a single SMTP client connection.  This
@@ -52,19 +53,46 @@ namespace netDumbster.smtp
         /// <summary>RSET Command</summary>
         public const int COMMAND_RSET = 1;
 
-        private const string MESSAGE_DEFAULT_HELO_RESPONSE = "250 {0}";
+        private const int MESSAGE_DEFAULT_HELO_RESPONSE_CODE = 250;
+
+        private const string MESSAGE_SERVER_URL = "mail.example.org";
 
         // Messages
-        private const string MESSAGE_DEFAULT_WELCOME = "220 {0} Welcome to C# SMTP Server.";
-        private const string MESSAGE_GOODBYE = "221 Goodbye.";
-        private const string MESSAGE_INVALID_ADDRESS = "451 Address is invalid.";
-        private const string MESSAGE_INVALID_ARGUMENT_COUNT = "501 Incorrect number of arguments.";
-        private const string MESSAGE_INVALID_COMMAND_ORDER = "503 Command not allowed here.";
-        private const string MESSAGE_OK = "250 OK";
-        private const string MESSAGE_START_DATA = "354 Start mail input; end with <CRLF>.<CRLF>";
-        private const string MESSAGE_SYSTEM_ERROR = "554 Transaction failed.";
-        private const string MESSAGE_UNKNOWN_COMMAND = "500 Command Unrecognized.";
-        private const string MESSAGE_UNKNOWN_USER = "550 User does not exist.";
+        private const int MESSAGE_DEFAULT_WELCOME_CODE = 220;
+        private const string MESSAGE_DEFAULT_WELCOME = "ESMTP Postfix";
+
+        private const int MESSAGE_GOODBYE_CODE = 221;
+        private const string MESSAGE_GOODBYE = "Goodbye.";
+
+        private const int MESSAGE_INVALID_ADDRESS_CODE = 451;
+        private const string MESSAGE_INVALID_ADDRESS = "Address is invalid.";
+
+        private const int MESSAGE_INVALID_ARGUMENT_COUNT_CODE = 501;
+        private const string MESSAGE_INVALID_ARGUMENT_COUNT = "Incorrect number of arguments.";
+
+        private const int MESSAGE_INVALID_COMMAND_ORDER_CODE = 503;
+        private const string MESSAGE_INVALID_COMMAND_ORDER = "Command not allowed here.";
+
+        private const int MESSAGE_OK_CODE = 250;
+        private const string MESSAGE_OK = "OK";
+
+        private const int MESSAGE_STARTTLS_CODE = 250;
+        private const string MESSAGE_STARTTLS = "STARTTLS";
+
+        private const int MESSAGE_STARTTLS_GO_AHEAD_CODE = 220;
+        private const string MESSAGE_STARTTLS_GO_AHEAD = "Go ahead";
+
+        private const int MESSAGE_START_DATA_CODE = 354;
+        private const string MESSAGE_START_DATA = "Start mail input; end with <CRLF>.<CRLF>";
+
+        private const int MESSAGE_SYSTEM_ERROR_CODE = 554;
+        private const string MESSAGE_SYSTEM_ERROR = "Transaction failed.";
+
+        private const int MESSAGE_UNKNOWN_COMMAND_CODE = 500;
+        private const string MESSAGE_UNKNOWN_COMMAND = "Command Unrecognized.";
+
+        private const int MESSAGE_UNKNOWN_USER_CODE = 500;
+        private const string MESSAGE_UNKNOWN_USER = "User does not exist.";
 
         // Regular Expressions
         private static readonly Regex ADDRESS_REGEX = new Regex("<.+@.+>", RegexOptions.IgnoreCase);
@@ -72,7 +100,7 @@ namespace netDumbster.smtp
         /// <summary>
         /// Context holding refenrece to Socket 
         /// </summary>
-        SmtpContext context;
+        SmtpStream context;
 
         /// <summary>Domain name for this server.</summary>
         private string domain;
@@ -85,9 +113,7 @@ namespace netDumbster.smtp
         /// List of received messages (emails).
         /// </summary>
         ConcurrentBag<SmtpMessage> smtpMessageStore;
-
-        /// <summary>The message to display to the client when they first connect.</summary>
-        private string welcomeMessage;
+        public X509Certificate Certificate { get; set; }
 
         #endregion Fields
 
@@ -119,40 +145,12 @@ namespace netDumbster.smtp
         #endregion
 
         #region Properties
-
-        /// <summary>
-        /// The response to the HELO command.  This response should
-        /// include the local server's domain name.  Please refer to RFC 821
-        /// for more details.
-        /// </summary>
-        public virtual string HeloResponse
+        private Func<string, bool> _emailValidator;
+        public void SetEmailValidator(Func<string, bool> validator)
         {
-            get
-            {
-                return heloResponse;
-            }
-            set
-            {
-                heloResponse = String.Format(value, domain);
-            }
+            _emailValidator = validator;
         }
 
-        /// <summary>
-        /// Returns the welcome message to display to new client connections.
-        /// This method can be overridden to allow for user defined welcome messages.
-        /// Please refer to RFC 821 for the rules on acceptable welcome messages.
-        /// </summary>
-        public virtual string WelcomeMessage
-        {
-            get
-            {
-                return welcomeMessage;
-            }
-            set
-            {
-                welcomeMessage = String.Format(value, domain);
-            }
-        }
 
         #endregion Properties
 
@@ -164,15 +162,20 @@ namespace netDumbster.smtp
         /// client to comply with RFC821.  This method is thread 
         /// safe.
         /// </summary>
-        public void ProcessConnection(Socket socket)
+        public void ProcessConnection(TcpClient tcpClient)
         {
-            context = new SmtpContext(socket);
-            log.Debug("Sending welcome message.");
-            SendWelcomeMessage(context);
-            log.Debug("Welcome message sent.");
-            log.Debug("Processing Commands.");
-            ProcessCommands(context);
-            log.Debug("Done processing Commands.");
+            var ip = ((IPEndPoint)tcpClient.Client.RemoteEndPoint);
+            using (var smtpStream = new SmtpStream(tcpClient.GetStream(), ip))
+            {
+                context = smtpStream;
+                log.Debug("Sending welcome message.");
+                smtpStream.SendResponse(MESSAGE_DEFAULT_WELCOME_CODE, String.Format("{0} {1}", MESSAGE_SERVER_URL, MESSAGE_DEFAULT_WELCOME));
+                log.Debug("Welcome message sent.");
+                log.Debug("Processing Commands.");
+                ProcessCommands(context);
+                log.Debug("Done processing Commands.");
+            }
+          
         }
 
         /// <summary>
@@ -183,23 +186,18 @@ namespace netDumbster.smtp
             if (context == null)
                 return;
 
-            log.Debug("trying to stop processor.");
-            log.Debug("Shutting down Socket.");
-            context.Socket.Shutdown(SocketShutdown.Both);
-            log.Debug("Socket Shutdown.");
-            log.Debug("Closing Socket.");
-            context.Socket.Close();
-            log.Debug("Socket Closed.");
+            log.Debug("Closing Context.");
+            context.Close();
+            log.Debug("Socket Context.");
         }
 
-        private void Data(SmtpContext context)
+        private void Data(SmtpStream context)
         {
-            context.WriteLine(MESSAGE_START_DATA);
+            context.SendResponse(MESSAGE_START_DATA_CODE, MESSAGE_START_DATA);
 
             SmtpMessage message = context.Message;
-            IPEndPoint clientEndPoint = (IPEndPoint)context.Socket.RemoteEndPoint;
             StringBuilder header = new StringBuilder();
-            header.Append(String.Format("Received: from ({0} [{1}])", context.ClientDomain, clientEndPoint.Address));
+            header.Append(String.Format("Received: from ({0} [{1}])", context.ClientDomain, context.Endpoint.Address));
             header.Append("\r\n");
             header.Append("     " + System.DateTime.Now);
             header.Append("\r\n");
@@ -208,12 +206,12 @@ namespace netDumbster.smtp
 
             header.Length = 0;
 
-            String line = context.ReadLine();
+            String line = context.Receive();
             while (!line.Equals("."))
             {
                 message.AddData(line);
                 message.AddData("\r\n");
-                line = context.ReadLine();
+                line = context.Receive();
             }
 
             // Spool the message
@@ -223,52 +221,74 @@ namespace netDumbster.smtp
                 if(MessageReceived != null) MessageReceived(this, new MessageReceivedArgs(message));
             }
 
-            context.WriteLine(MESSAGE_OK);
-
             // Reset the connection.
-            context.Reset();
+            Rset(context);
         }
 
         /// <summary>
         /// Handles the HELO command.
         /// </summary>
-        private void Helo(SmtpContext context, String[] inputs)
+        private void Helo(SmtpStream context, String[] inputs)
         {
-            if (context.LastCommand == -1)
+            if (context.LastCommand != -1)
             {
                 if (inputs.Length == 2)
                 {
                     context.ClientDomain = inputs[1];
                     context.LastCommand = COMMAND_HELO;
-                    context.WriteLine(HeloResponse);
+                    var helo = String.Format("{0} {1}", MESSAGE_DEFAULT_HELO_RESPONSE_CODE, context.ClientDomain);
+                    context.SendPartial(MESSAGE_DEFAULT_HELO_RESPONSE_CODE, context.ClientDomain);
+                    context.SendResponse(MESSAGE_STARTTLS_CODE, MESSAGE_STARTTLS);
                 }
                 else
                 {
-                    context.WriteLine(MESSAGE_INVALID_ARGUMENT_COUNT);
+                    context.SendResponse(MESSAGE_INVALID_ARGUMENT_COUNT_CODE, MESSAGE_INVALID_ARGUMENT_COUNT);
                 }
             }
             else
             {
-                context.WriteLine(MESSAGE_INVALID_COMMAND_ORDER);
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
             }
         }
 
+        /// <summary>
+        /// Handles the HELO command.
+        /// </summary>
+        private void Ehlo(SmtpStream context, String[] inputs)
+        {
+            if (context.LastCommand != -1)
+            {
+                if (inputs.Length == 2)
+                {
+                    context.ClientDomain = inputs[1];
+                    context.LastCommand = COMMAND_HELO;
+                    //context.SendPartial(MESSAGE_DEFAULT_HELO_RESPONSE_CODE, String.Format("{0} welcome", MESSAGE_SERVER_URL));
+                    context.SendPartial(MESSAGE_DEFAULT_HELO_RESPONSE_CODE, "Hello " + context.ClientDomain);
+                    context.SendResponse(MESSAGE_STARTTLS_CODE, MESSAGE_STARTTLS);
+                }
+                else
+                {
+                    context.SendResponse(MESSAGE_INVALID_ARGUMENT_COUNT_CODE, MESSAGE_INVALID_ARGUMENT_COUNT);
+                }
+            }
+            else
+            {
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
+            }
+        }
+      
         /// <summary>
         /// Provides common initialization logic for the constructors.
         /// </summary>
         private void Initialize(string domain)
         {
             this.domain = domain;
-
-            // Initialize default messages
-            welcomeMessage = String.Format(MESSAGE_DEFAULT_WELCOME, domain);
-            heloResponse = String.Format(MESSAGE_DEFAULT_HELO_RESPONSE, domain);
         }
 
         /// <summary>
         /// Handle the MAIL FROM:&lt;address&gt; command.
         /// </summary>
-        private void Mail(SmtpContext context, string argument)
+        private void Mail(SmtpStream context, string argument)
         {
             bool addressValid = false;
             if (context.LastCommand == COMMAND_HELO)
@@ -282,7 +302,7 @@ namespace netDumbster.smtp
                         context.Message.FromAddress = emailAddress;
                         context.LastCommand = COMMAND_MAIL;
                         addressValid = true;
-                        context.WriteLine(MESSAGE_OK);
+                        context.SendResponse(MESSAGE_OK_CODE, MESSAGE_OK);
                     }
                     catch
                     {
@@ -293,12 +313,12 @@ namespace netDumbster.smtp
                 // If the address is invalid, inform the client.
                 if (!addressValid)
                 {
-                    context.WriteLine(MESSAGE_INVALID_ADDRESS);
+                    context.SendResponse(MESSAGE_INVALID_ADDRESS_CODE, MESSAGE_INVALID_ADDRESS);
                 }
             }
             else
             {
-                context.WriteLine(MESSAGE_INVALID_COMMAND_ORDER);
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
             }
         }
 
@@ -328,7 +348,7 @@ namespace netDumbster.smtp
         /// Handles the command input from the client.  This
         /// message returns when the client issues the quit command.
         /// </summary>
-        private void ProcessCommands(SmtpContext context)
+        private void ProcessCommands(SmtpStream context)
         {
             bool isRunning = true;
             String inputLine;
@@ -338,11 +358,11 @@ namespace netDumbster.smtp
             {
                 try
                 {
-                    inputLine = context.ReadLine();
+                    inputLine = context.Receive();
                     if (inputLine == null)
                     {
                         isRunning = false;
-                        context.WriteLine(MESSAGE_GOODBYE);
+                        context.SendResponse(MESSAGE_GOODBYE_CODE, MESSAGE_GOODBYE);
                         context.Close();
                         continue;
                     }
@@ -353,15 +373,22 @@ namespace netDumbster.smtp
                         case "helo":
                             Helo(context, inputs);
                             break;
+                        case "ehlo":
+                            Ehlo(context, inputs);
+                            break;
+                        case "starttls":
+                            StartTLS(context);
+                            context = context.ToSsl(Certificate);
+                            break;
                         case "rset":
                             Rset(context);
                             break;
                         case "noop":
-                            context.WriteLine(MESSAGE_OK);
+                            context.SendResponse(MESSAGE_OK_CODE, MESSAGE_OK);
                             break;
                         case "quit":
                             isRunning = false;
-                            context.WriteLine(MESSAGE_GOODBYE);
+                            context.SendResponse(MESSAGE_GOODBYE_CODE, MESSAGE_GOODBYE);
                             context.Close();
                             break;
                         case "mail":
@@ -370,7 +397,7 @@ namespace netDumbster.smtp
                                 Mail(context, inputLine.Substring(inputLine.IndexOf(" ")));
                                 break;
                             }
-                            context.WriteLine(MESSAGE_UNKNOWN_COMMAND);
+                            context.SendResponse(MESSAGE_UNKNOWN_COMMAND_CODE, MESSAGE_UNKNOWN_COMMAND);
                             break;
                         case "rcpt":
                             if (inputs[1].ToLower().StartsWith("to"))
@@ -378,13 +405,13 @@ namespace netDumbster.smtp
                                 Rcpt(context, inputLine.Substring(inputLine.IndexOf(" ")));
                                 break;
                             }
-                            context.WriteLine(MESSAGE_UNKNOWN_COMMAND);
+                            context.SendResponse(MESSAGE_UNKNOWN_COMMAND_CODE, MESSAGE_UNKNOWN_COMMAND);
                             break;
                         case "data":
                             Data(context);
                             break;
                         default:
-                            context.WriteLine(MESSAGE_UNKNOWN_COMMAND);
+                            context.SendResponse(MESSAGE_UNKNOWN_COMMAND_CODE, MESSAGE_UNKNOWN_COMMAND);
                             break;
                     }
                 }
@@ -393,20 +420,35 @@ namespace netDumbster.smtp
                     SocketException sx = ex as SocketException;
 
                     if (sx != null && sx.ErrorCode == 10060)
-                        context.WriteLine(MESSAGE_GOODBYE);
+                        context.SendResponse(MESSAGE_GOODBYE_CODE, MESSAGE_GOODBYE);
                     //else
                     //    context.WriteLine(MESSAGE_SYSTEM_ERROR);
 
                     isRunning = false;
-                    context.Socket.Dispose();
+                    context.Dispose();
                 }
             }
         }
 
         /// <summary>
+        /// Reset the connection state.
+        /// </summary>
+        private void StartTLS(SmtpStream context)
+        {
+            if (context.LastCommand == COMMAND_HELO)
+            {
+                context.Message = new SmtpMessage();
+                context.SendResponse(MESSAGE_STARTTLS_GO_AHEAD_CODE, MESSAGE_STARTTLS_GO_AHEAD);
+            }
+            else
+            {
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
+            }
+        }
+        /// <summary>
         /// Handle the RCPT TO:&lt;address&gt; command.
         /// </summary>
-        private void Rcpt(SmtpContext context, string argument)
+        private void Rcpt(SmtpStream context, string argument)
         {
             if (context.LastCommand == COMMAND_MAIL || context.LastCommand == COMMAND_RCPT)
             {
@@ -415,61 +457,47 @@ namespace netDumbster.smtp
                 {
                     try
                     {
-                        //EmailAddress emailAddress = new EmailAddress(address);
-
-                        // Check to make sure we want to accept this message.
-                        //if (recipientFilter.AcceptRecipient(context, emailAddress))
-                        //{
                         EmailAddress emailAddress = new EmailAddress(address);
                         context.Message.AddToAddress(emailAddress);
                         context.LastCommand = COMMAND_RCPT;
-                        context.WriteLine(MESSAGE_OK);
-                        //}
-                        //else
-                        //{
-                        //    context.WriteLine(MESSAGE_UNKNOWN_USER);
-                        //    if (log.IsDebugEnabled) log.Debug(String.Format("Connection {0}: RcptTo address: {1} rejected.  Did not pass Address Filter.", context.ConnectionId, address));
-                        //}
+                        if (_emailValidator == null || _emailValidator(address))
+                        {
+                            context.SendResponse(MESSAGE_OK_CODE, MESSAGE_OK);
+                        }
+                        else
+                            context.SendResponse(MESSAGE_INVALID_ADDRESS_CODE, MESSAGE_INVALID_ADDRESS);
                     }
                     catch
                     {
-                        context.WriteLine(MESSAGE_INVALID_ADDRESS);
+                        context.SendResponse(MESSAGE_INVALID_ADDRESS_CODE, MESSAGE_INVALID_ADDRESS);
                     }
                 }
                 else
                 {
-                    context.WriteLine(MESSAGE_INVALID_ADDRESS);
+                    context.SendResponse(MESSAGE_INVALID_ADDRESS_CODE, MESSAGE_INVALID_ADDRESS);
                 }
             }
             else
             {
-                context.WriteLine(MESSAGE_INVALID_COMMAND_ORDER);
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
             }
         }
 
         /// <summary>
         /// Reset the connection state.
         /// </summary>
-        private void Rset(SmtpContext context)
+        private void Rset(SmtpStream context)
         {
             if (context.LastCommand != -1)
             {
-                // Dump the message and reset the context.
-                context.Reset();
-                context.WriteLine(MESSAGE_OK);
+                context.Message = new SmtpMessage();
+                context.LastCommand = COMMAND_HELO;
+                context.SendResponse(MESSAGE_OK_CODE, MESSAGE_OK);
             }
             else
             {
-                context.WriteLine(MESSAGE_INVALID_COMMAND_ORDER);
+                context.SendResponse(MESSAGE_INVALID_COMMAND_ORDER_CODE, MESSAGE_INVALID_COMMAND_ORDER);
             }
-        }
-
-        /// <summary>
-        /// Sends the welcome greeting to the client.
-        /// </summary>
-        private void SendWelcomeMessage(SmtpContext context)
-        {
-            context.WriteLine(WelcomeMessage);
         }
 
         #endregion Methods

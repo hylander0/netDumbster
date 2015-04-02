@@ -120,13 +120,13 @@
     <Compile Include="EmailAddress.cs" />
     <Compile Include="InvalidEmailAddressException.cs" />
     <Compile Include="MessageReceivedArgs.cs" />
-    <Compile Include="SmtpContext.cs" />
     <Compile Include="SmtpMessage.cs" />
     <Compile Include="SmtpMessagePart.cs" />
     <Compile Include="SimpleSmtpServer.cs">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="SmtpProcessor.cs" />
+    <Compile Include="SmtpStream.cs" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include="Microsoft.Net.Client.3.5">
@@ -156,6 +156,9 @@
     </BootstrapperPackage>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="localhost.pfx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
     <None Include="netDumbster.snk" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
